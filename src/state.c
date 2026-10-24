@@ -171,6 +171,19 @@ static void linefeed(VTermState *state)
     state->pos.row++;
 }
 
+/* U+FE0F VARIATION SELECTOR-16 asks for emoji presentation, which takes two
+ * cells (as string-width and modern terminals count it) even when the base
+ * character alone is narrow, like U+26A0 WARNING SIGN */
+#define EMOJI_PRESENTATION_SELECTOR 0xFE0F
+
+static int has_emoji_selector(const uint32_t chars[])
+{
+  for(int i = 0; chars[i]; i++)
+    if(chars[i] == EMOJI_PRESENTATION_SELECTOR)
+      return 1;
+  return 0;
+}
+
 static void grow_combine_buffer(VTermState *state)
 {
   size_t    new_size = state->combine_chars_size * 2;
@@ -336,8 +349,25 @@ static int on_text(const char bytes[], size_t len, void *user)
       printf("}\n");
 #endif
 
+      /* An emoji selector widens a narrow glyph; move the cursor along too */
+      int widened = 0;
+      if(state->combine_width == 1 && has_emoji_selector(state->combine_chars) &&
+         state->combine_pos.col + 2 <= THISROWWIDTH(state)) {
+        state->combine_width = 2;
+        widened = 1;
+      }
+
       /* Now render it */
       putglyph(state, state->combine_chars, state->combine_width, state->combine_pos);
+
+      if(widened) {
+        if(state->pos.col + 1 >= THISROWWIDTH(state)) {
+          if(state->mode.autowrap)
+            state->at_phantom = 1;
+        }
+        else
+          state->pos.col++;
+      }
     }
     else {
       DEBUG_LOG("libvterm: TODO: Skip over split char+combining\n");
@@ -375,6 +405,9 @@ static int on_text(const char bytes[], size_t len, void *user)
 
     chars[glyph_ends - glyph_starts] = 0;
     i--;
+
+    if(width == 1 && has_emoji_selector(chars))
+      width = 2;
 
 #ifdef DEBUG_GLYPH_COMBINE
     int printpos;
